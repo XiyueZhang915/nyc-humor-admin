@@ -25,9 +25,12 @@ test('admin RLS, Google requirement, privilege escalation and member compatibili
  await db.query("select set_config('request.jwt.claim.sub',$1,false)",[admin]);
  await db.exec(`update public.profiles set is_superadmin=true where id='${admin}';
  insert into public.generations(user_id,prompt,model) values('${admin}','A long prompt for security testing','test');
- insert into public.captions(generation_id,place,category,experience,caption) select id,'Butler','Around campus','A sufficiently long experience','A real test caption' from public.generations;`);
+ insert into public.captions(generation_id,place,category,experience,caption) select id,'Butler','Around campus','A sufficiently long experience','A real test caption' from public.generations;
+ insert into public.caption_votes(user_id,caption_id,value) select '${admin}',id,1 from public.captions;
+ insert into public.caption_votes(user_id,caption_id,value) select '${member}',id,-1 from public.captions;`);
  const as=async(id,provider='google')=>{await db.exec('reset role');await db.query("select set_config('request.jwt.claim.sub',$1,false),set_config('test.provider',$2,false)",[id,provider]);await db.exec('set role authenticated');};
  await as(member);
+ assert.equal((await db.query('select * from public.caption_votes')).rows.length,1);
  assert.equal((await db.query('select * from public.profiles')).rows.length,1);
  assert.equal((await db.query('select * from public.generations')).rows.length,0);
  await assert.rejects(db.exec('update public.profiles set is_superadmin=true'),/permission denied/);
@@ -36,7 +39,7 @@ test('admin RLS, Google requirement, privilege escalation and member compatibili
  assert.equal((await db.query("update public.captions set caption='Unauthorized' returning id")).rows.length,0);
  assert.equal((await db.query('delete from public.captions returning id')).rows.length,0);
  await as(admin,'email');assert.equal((await db.query('select public.is_admin() as ok')).rows[0].ok,false);
- await as(admin);assert.equal((await db.query('select * from public.profiles')).rows.length,2);
+ await as(admin);assert.equal((await db.query('select * from public.caption_votes')).rows.length,2);assert.equal((await db.query('select * from public.profiles')).rows.length,2);
  assert.equal((await db.query("update public.captions set caption='Edited by admin' returning id")).rows.length,1);
  assert.equal((await db.query('delete from public.captions returning id')).rows.length,1);
  await db.exec('reset role');await db.exec(`update public.profiles set is_superadmin=false where id='${admin}'`);
