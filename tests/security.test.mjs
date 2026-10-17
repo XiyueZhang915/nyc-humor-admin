@@ -1,0 +1,45 @@
+import {test} from 'node:test';
+import assert from 'node:assert/strict';
+import {readFile} from 'node:fs/promises';
+import {PGlite} from '@electric-sql/pglite';
+test('admin RLS, Google requirement, privilege escalation and member compatibility',async()=>{
+ const db=new PGlite();
+ const admin='11111111-1111-4111-8111-111111111111',member='22222222-2222-4222-8222-222222222222';
+ try{
+ await db.exec(`create role anon; create role authenticated; create schema auth;
+ create table auth.users(id uuid primary key);
+ create function auth.uid() returns uuid language sql stable as $$select nullif(current_setting('request.jwt.claim.sub',true),'')::uuid$$;
+ create function auth.jwt() returns jsonb language sql stable as $$select jsonb_build_object('app_metadata',jsonb_build_object('providers',jsonb_build_array(coalesce(nullif(current_setting('test.provider',true),''),'google'))))$$;
+ grant usage on schema public,auth to anon,authenticated;
+ create table public.profiles(id uuid primary key references auth.users,first_name text,last_name text,avatar_path text);
+ alter table public.profiles enable row level security;
+ grant select,insert,update on public.profiles to authenticated;
+ create policy own_read on public.profiles for select to authenticated using(id=auth.uid());
+ create policy own_update on public.profiles for update to authenticated using(id=auth.uid()) with check(id=auth.uid());
+ create policy own_insert on public.profiles for insert to authenticated with check(id=auth.uid());
+ insert into auth.users values('${admin}'),('${member}');
+ insert into public.profiles(id) values('${admin}'),('${member}');`);
+ await db.exec(await readFile(new URL('../supabase/assignment4.sql',import.meta.url),'utf8'));
+ const migration=await readFile(new URL('../supabase/assignment6.sql',import.meta.url),'utf8');
+ await db.exec(migration);await db.exec(migration);
+ await db.query("select set_config('request.jwt.claim.sub',$1,false)",[admin]);
+ await db.exec(`update public.profiles set is_superadmin=true where id='${admin}';
+ insert into public.generations(user_id,prompt,model) values('${admin}','A long prompt for security testing','test');
+ insert into public.captions(generation_id,place,category,experience,caption) select id,'Butler','Around campus','A sufficiently long experience','A real test caption' from public.generations;`);
+ const as=async(id,provider='google')=>{await db.exec('reset role');await db.query("select set_config('request.jwt.claim.sub',$1,false),set_config('test.provider',$2,false)",[id,provider]);await db.exec('set role authenticated');};
+ await as(member);
+ assert.equal((await db.query('select * from public.profiles')).rows.length,1);
+ assert.equal((await db.query('select * from public.generations')).rows.length,0);
+ await assert.rejects(db.exec('update public.profiles set is_superadmin=true'),/permission denied/);
+ await assert.rejects(db.exec(`insert into public.profiles(id,is_superadmin) values('${member}',true)`),/permission denied/);
+ await db.exec("update public.profiles set first_name='Member' where id=auth.uid()");
+ assert.equal((await db.query("update public.captions set caption='Unauthorized' returning id")).rows.length,0);
+ assert.equal((await db.query('delete from public.captions returning id')).rows.length,0);
+ await as(admin,'email');assert.equal((await db.query('select public.is_admin() as ok')).rows[0].ok,false);
+ await as(admin);assert.equal((await db.query('select * from public.profiles')).rows.length,2);
+ assert.equal((await db.query("update public.captions set caption='Edited by admin' returning id")).rows.length,1);
+ assert.equal((await db.query('delete from public.captions returning id')).rows.length,1);
+ await db.exec('reset role');await db.exec(`update public.profiles set is_superadmin=false where id='${admin}'`);
+ await as(admin);assert.equal((await db.query('select public.is_admin() as ok')).rows[0].ok,false);
+ }finally{await db.close();}
+});
