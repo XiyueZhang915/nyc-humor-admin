@@ -1,14 +1,38 @@
 "use server";
 import {requireAdmin} from '@/lib/admin';
-import {parseMoment,makePrompt,generateCaption,defaultGeminiModel} from '@/lib/humor';
+import {parseMoment,generateCaption} from '@/lib/humor';
+import {loadPipeline} from '@/lib/pipeline';
 import {revalidatePath} from 'next/cache';
 export type State = {error?:string;success?:string};
 export async function createMedia(_state:State,form:FormData):Promise<State>{
  const {db,user}=await requireAdmin();
- try{const moment=parseMoment(form);const key=process.env.GEMINI_API_KEY;if(!key)throw new Error('Configure the server Gemini key before creating media.');const prompt=makePrompt(moment);const model=process.env.GEMINI_MODEL||defaultGeminiModel;
- const {data:g,error}=await db.from('generations').insert({user_id:user.id,prompt,model}).select('id').single();if(error)throw new Error('Could not reserve generation. Wait 30 seconds between attempts; daily limit is 10.');
- const caption=await generateCaption(prompt,key,model);const {error:saveError}=await db.from('captions').insert({...moment,caption,generation_id:g.id});if(saveError)throw new Error('AI responded but publishing failed. Check database permissions.');
- revalidatePath('/');revalidatePath('/media');return {success:'AI caption generated and published.'};
+ try{
+  const moment=parseMoment(form);const key=process.env.GEMINI_API_KEY;
+  if(!key)throw new Error('Configure the server Gemini key before creating media.');
+  const plan=await loadPipeline(db);
+  const render=(template:string,previous:string)=>template.replaceAll('{{moment}}',JSON.stringify(moment)).replaceAll('{{previous_output}}',JSON.stringify(previous));
+  const prompt=render(plan.steps[0].template,'');
+  if(prompt.length<10||prompt.length>5000)throw new Error('The first step prompt must contain 10–5000 characters.');
+  const {data:g,error}=await db.from('generations').insert({user_id:user.id,prompt,model:plan.steps[0].model,prompt_chain_id:plan.chainId}).select('id').single();
+  if(error)throw new Error('Could not reserve generation. Wait 30 seconds between attempts; daily limit is 10.');
+  let caption='';
+  for(const step of plan.steps){
+   const stepPrompt=render(step.template,caption);const started=Date.now();
+   try{
+    caption=await generateCaption(stepPrompt,key,step.model);
+   }catch(e){
+    const message=e instanceof Error?e.message:'Generation failed.';
+    const {error:logError}=await db.from('llm_responses').insert({generation_id:g.id,prompt_chain_step_id:step.id,model_key:step.model,prompt_text:stepPrompt,status:'failed',error_message:message,latency_ms:Date.now()-started});
+    if(logError)throw new Error(`${message} The response audit could not be saved.`);
+    revalidatePath('/catalog/requests');revalidatePath('/catalog/responses');throw e;
+   }
+   const {error:logError}=await db.from('llm_responses').insert({generation_id:g.id,prompt_chain_step_id:step.id,model_key:step.model,prompt_text:stepPrompt,status:'succeeded',output_text:caption,latency_ms:Date.now()-started});
+   if(logError)throw new Error('AI responded, but its response audit could not be saved. No caption was published.');
+  }
+  const {error:saveError}=await db.from('captions').insert({...moment,caption,generation_id:g.id});
+  if(saveError)throw new Error('AI responded but publishing failed. The request and response remain available for inspection.');
+  for(const path of ['/','/media','/catalog/requests','/catalog/responses'])revalidatePath(path);
+  return {success:'AI caption generated and published. Request and response recorded.'};
  }catch(e){return {error:e instanceof Error?e.message:'Creation failed.'};}
 }
 export async function editMedia(_state:State,form:FormData):Promise<State>{

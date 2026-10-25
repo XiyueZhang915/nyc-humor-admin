@@ -1,20 +1,65 @@
-# The Humor Index — Assignment 6
-Independent Next.js admin app for the existing NYC AI caption database.
+# The Humor Index — Assignments 6 and 7
 
-## Setup
-1. Install: `npm ci`. Copy `.env.example` to `.env.local`; use the SAME database as the creation/rating app. No service-role key.
-2. Run `supabase/assignment6.sql` in Supabase SQL Editor after assignments 3 and 4. This limits profile column writes to prevent privilege escalation while preserving member profile editing.
-3. Bootstrap: sign in with Google in the original app; find your verified user in Supabase Authentication. In SQL Editor execute the commented UPDATE at the end of the migration with your verified Google email. Direct owner access solves the initial admin lockout. Ordinary app users cannot set this field.
-4. Run `npm run dev`. All four data pages and every mutation check the Google identity and the live database flag. Database RLS checks both too. Login/callback/access-denied and framework assets are public entry points and expose no admin data.
-5. Optional Gemini key enables genuine AI creation. Original per-user daily and spacing quotas remain enforced. Editing and deletion use the authenticated user, never a service-role bypass. Deleting captions cascades their votes; generation history remains.
+Independent Next.js admin for the existing NYC AI caption database. Repository: https://github.com/XiyueZhang915/nyc-humor-admin. Vercel project: nyc-humor-admin.
 
-## Independent GitHub and Vercel projects
-Initialize Git INSIDE this directory. Create a new repository `nyc-humor-admin`, push it, and import into a NEW Vercel project. Add SUPABASE_URL, SUPABASE_ANON_KEY, GEMINI_API_KEY and optionally GEMINI_MODEL. Do not reuse the original Vercel project.
-Add the production and exact commit-deployment `/auth/callback` URLs to Supabase Authentication URL Configuration. Google continues redirecting through the existing Supabase provider callback.
-Disable Vercel Authentication deployment protection for both submitted apps. This does not remove the application's Google + database superadmin checks.
+## Setup and security
 
-## Verification and submission
-Run lint, TypeScript and build. Test signed-out direct visits to `/`, `/users`, `/media`, `/ratings`; all redirect to login. Test a Google member without the flag; data routes redirect to denied and direct database admin mutations fail. Test a flagged Google admin: full profile/rating reads, AI creation, edit, delete. Sign out and revisit data routes. Verify revoking the flag blocks the next request and action. Never delete valuable production media merely to test.
-Use Vercel's deployment details to copy the latest successful deployment URL tied to each app's final Git commit. Verify both from Incognito (admin must show Google login), then submit both URLs in the course Submissions section. Production aliases are not commit-specific URLs.
+Use the SAME database as the creation/rating app. Run `npm ci`; copy `.env.example` to `.env.local` and configure SUPABASE_URL, SUPABASE_ANON_KEY and the server-only GEMINI_API_KEY. No service-role key is used.
 
-Statistics use real complete paginated database reads: member count, captions, ratings, approval, category distribution, ranked net-vote captions, and publication per generation attempt. Empty data is shown honestly. Admin edits preserve the source prompt/model; ratings are read-only. For large datasets, move aggregates into authorized database functions.
+Apply original assignment3.sql and assignment4.sql, then this project's `supabase/assignment6.sql`, `supabase/assignment7.sql` and `supabase/assignment7-storage.sql`, in that order. Assignment 7 migrations are repeatable and preserve existing captions/votes. They describe the real existing pipeline and mirror genuine published output; no example generations, missing historical errors or timings are invented.
+
+Bootstrap a verified Google account using trusted database-owner access in Supabase SQL Editor:
+
+```sql
+update public.profiles set is_superadmin=true
+where id=(select id from auth.users where email='YOUR_VERIFIED_GOOGLE_EMAIL');
+```
+
+The current configured administrator is xz3570@columbia.edu. Normal users cannot edit this flag. Every data page and Server Action checks both Google identity and the current flag; database RLS independently enforces the same restriction. Login/callback/denied and framework assets expose no admin data.
+
+Add production and exact commit-deployment `/auth/callback` URLs to Supabase's redirect allowlist. Retain the existing public app as Site URL. Disable Vercel Authentication deployment protection while preserving the application's Google/superadmin protection.
+
+## Routes and capabilities
+
+| Route | Capability |
+| --- | --- |
+| `/` | Community statistics, categories, rankings and publication rate |
+| `/users` | Read profiles |
+| `/media` | View AI captions; preserve existing caption CRUD |
+| `/ratings` | Read up/downvotes |
+| `/catalog/chains` | Read prompt chains |
+| `/catalog/steps` | Read ordered steps, templates and model references |
+| `/catalog/mix` | Read/update relative routing weights and enabled state |
+| `/catalog/terms` | Terms CRUD |
+| `/catalog/requests` | Read generation requests, prompts, models and status |
+| `/catalog/examples` | Curated input/output examples CRUD |
+| `/catalog/models` | LLM model catalog CRUD |
+| `/catalog/providers` | LLM provider catalog CRUD |
+| `/catalog/responses` | Read original responses, errors and available timing |
+| `/catalog/domains` | Signup-domain allowlist CRUD |
+| `/catalog/emails` | Whitelisted-email CRUD |
+| `/images` | Upload/view/update/delete private images |
+
+Catalogs and images use recoverable deletion: Move to Trash, Trash view, Restore. Image files remain private and retained for recovery. No permanent purge control is exposed. The pre-existing caption editor retains explicit permanent-delete confirmation and its vote cascade behavior.
+
+Lists use server-side search and deterministic pagination. Related records have links and full details. Mutations accept only registered resources, operations and fields. IDs, owners and creation timestamps are database-owned, except image IDs generated by the server for randomized object names. API keys are never stored in catalog fields.
+
+## Pipeline and scope
+
+New admin generations choose an enabled chain using relative weights and execute its ordered steps. Each actual prompt, model, response, error and duration is recorded before publication. At least one mix entry must remain enabled with positive weight. Existing per-user daily/spacing quotas remain enforced.
+
+The execution adapter supports Google Gemini. Other provider records can be documented without installing new adapters. A chain referencing a disabled/deleted model or provider fails explicitly. Chain/step definitions are read-only as requested. Templates accept JSON-encoded `{{moment}}` and `{{previous_output}}`.
+
+The public creation/rating app retains its existing generator; the mix controls admin generation. Terms/examples do not automatically train or alter live prompts. Domain/email management does not install new signup enforcement or grant admin privileges. Existing public signup policy is unchanged.
+
+Images accept JPG/PNG/WebP up to 5 MB, with MIME/signature validation and required alt text. The admin-media bucket is private; only Google superadmins can upload/read. Preview links expire in five minutes. The original avatars bucket is unchanged.
+
+Existing/public-app successful captions are mirrored into response history by a database trigger. Editing a caption does not rewrite the captured original response. Legacy unpublished attempts remain explicitly unknown, rather than falsely classified as failed.
+
+## Verification
+
+Run `npm run lint`, `npm test`, and `npm run build`. Local `npm run build -- --webpack` supports temporary/symlinked dependencies when Turbopack cannot resolve them.
+
+Tests run real PostgreSQL in memory and never change the live database. They cover repeatable migrations, anon/member/non-Google/admin roles, CRUD grants, trash/restore, private object policies, response provenance/immutability, mix constraints, input validation, file signatures and weighted selection. Assignment 6 regression tests remain included.
+
+Live QA should check all pages, unauthorized access, catalog/image create/edit/trash/restore and mix updates using clearly named QA records. Move QA records to Trash afterward. Never delete valuable production captions for a test. Never submit coursework through the course portal on the user's behalf.
